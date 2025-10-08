@@ -40,7 +40,7 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { 
             getFirestore, collection, query, where, onSnapshot, doc, 
-            addDoc, updateDoc, getDocs // <-- getDocs ditambahkan untuk AdminPage
+            addDoc, updateDoc, getDocs 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { 
             getStorage, ref as storageRef, uploadString, getDownloadURL 
@@ -374,8 +374,20 @@
                         videoRef.value.srcObject = mediaStream;
                         showToast('Kamera berhasil diaktifkan.', 'success');
                     } catch (error) {
-                        console.error("Error accessing camera:", error);
-                        showToast('Gagal mengakses kamera. Pastikan izin diberikan.', 'error');
+                        console.error("Error mengakses kamera:", error);
+                        
+                        let errorMessage = 'Gagal mengakses kamera.';
+                        if (error.name === 'NotAllowedError') {
+                            errorMessage = 'Akses kamera ditolak. Mohon izinkan dari pengaturan browser.';
+                        } else if (error.name === 'NotFoundError') {
+                            errorMessage = 'Tidak ada kamera yang ditemukan di perangkat ini.';
+                        } else if (error.name === 'NotReadableError') {
+                             errorMessage = 'Kamera sedang digunakan oleh aplikasi lain.';
+                        } else if (location.protocol !== 'https:') {
+                            errorMessage = 'Fitur kamera hanya didukung di HTTPS atau localhost.';
+                        }
+                        
+                        showToast(errorMessage, 'error');
                     }
                 };
 
@@ -390,19 +402,30 @@
                     if (videoRef.value && canvasRef.value) {
                         const video = videoRef.value;
                         const canvas = canvasRef.value;
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
+                        const maxWidth = 800; // Target Lebar Maksimum untuk kompresi
+
+                        // Hitung dimensi baru sambil menjaga aspek rasio
+                        const scaleFactor = maxWidth / video.videoWidth;
+                        const newWidth = maxWidth;
+                        const newHeight = video.videoHeight * scaleFactor;
+
+                        canvas.width = newWidth;
+                        canvas.height = newHeight;
+                        
                         const ctx = canvas.getContext('2d');
-                        // Mirror the image horizontally
+                        
+                        // Mirror dan gambar video pada ukuran baru
                         ctx.save();
                         ctx.scale(-1, 1);
-                        ctx.drawImage(video, canvas.width * -1, 0, canvas.width, canvas.height);
+                        ctx.drawImage(video, newWidth * -1, 0, newWidth, newHeight); 
                         ctx.restore();
                         
-                        const url = canvas.toDataURL('image/jpeg', 0.8);
+                        // Konversi ke data URL dengan kompresi 70%
+                        const url = canvas.toDataURL('image/jpeg', 0.7); 
+                        
                         photoDataURL.value = url;
                         stopCamera();
-                        showToast('Foto berhasil diambil.', 'success');
+                        showToast('Foto berhasil diambil dan dikompresi.', 'success');
                     }
                 };
 
@@ -442,7 +465,8 @@
                     try {
                         showToast('Mengunggah foto dan menyimpan data...', 'info');
                         
-                        const photoUrl = await uploadPhotoToStorage(photoDataURL.value);
+                        // Foto yang sudah dikompresi dikirim ke Storage
+                        const photoUrl = await uploadPhotoToStorage(photoDataURL.value); 
                         
                         const dataToSave = {
                             ...form,
