@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aplikasi Klarifikasi BPHTB</title>
+    <!-- Vue 3 CDN -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Vue Router CDN -->
+    <script src="https://unpkg.com/vue-router@4"></script>
+    <!-- Vuetify 3 CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@5.x/css/materialdesignicons.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/vuetify@3.x/dist/vuetify.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/vuetify@3.x/dist/vuetify.min.js"></script>
+    <!-- Menambahkan favicon untuk menghilangkan warning 404 di konsol -->
+    <link rel="icon" type="image/png" href="https://placehold.co/32x32/4F46E5/FFFFFF?text=BP">
+    <style>
+        /* Gaya Kustom untuk tampilan yang lebih baik */
+        #app {
+            background-color: #f4f6f9;
+            min-height: 100vh;
+        }
+        .v-card {
+            border-radius: 12px !important;
+        }
+        .v-main {
+            padding-top: 64px !important; /* Ruang untuk app-bar */
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        // === Firebase Initialization & Imports ===
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, signInWithEmailAndPassword, sendPasswordResetEmail, signOut, 
+            onAuthStateChanged, signInAnonymously, signInWithCustomToken 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, collection, query, where, onSnapshot, doc, 
+            addDoc, updateDoc, getDocs // <-- getDocs ditambahkan untuk AdminPage
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { 
+            getStorage, ref as storageRef, uploadString, getDownloadURL 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+
+        // === Konfigurasi Wajib Canvas ===
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'bphtb-app-dev';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {apiKey: "AIzaSyCkVDN-uGXxzcCwsAqzpmB4rIPo2LCWcPI",
+  authDomain: "klarifikasi-bphtb.firebaseapp.com",
+  projectId: "klarifikasi-bphtb",
+  storageBucket: "klarifikasi-bphtb.firebasestorage.app",
+  messagingSenderId: "293539281829",
+  appId: "1:293539281829:web:866624313359520f51864c"};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const ADMIN_EMAIL = 'admin@bphtb.com'; // Email yang di anggap sebagai Admin
+
+        // Inisialisasi Firebase
+        let auth, db, storage;
+        if (Object.keys(firebaseConfig).length > 0) {
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            storage = getStorage(app);
+        } else {
+            // Baris ini yang menyebabkan pesan 'mode mockup' di konsol jika konfigurasi tidak ada.
+            console.error("Firebase config tidak tersedia. Aplikasi berjalan dalam mode mockup.");
+        }
+
+        const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
+        const { createRouter, createWebHashHistory } = VueRouter;
+        const { createVuetify } = Vuetify;
+
+        // Inisialisasi Vuetify
+        const vuetify = createVuetify({
+            theme: {
+                themes: {
+                    light: {
+                        colors: {
+                            primary: '#4F46E5', // Indigo 600
+                            secondary: '#6366F1', // Indigo 500
+                            success: '#10B981', // Green 500
+                            error: '#EF4444', // Red 500
+                            warning: '#F59E0B', // Yellow 500
+                        },
+                    },
+                },
+            },
+        });
+
+        // --- GLOBAL STATE (Composition API Style) ---
+        const globalState = reactive({
+            user: null,
+            isAdmin: false,
+            isLoading: true,
+            authReady: false,
+            toast: {
+                show: false,
+                message: '',
+                color: 'info'
+            }
+        });
+
+        const showToast = (message, color = 'info') => {
+            globalState.toast.message = message;
+            globalState.toast.color = color;
+            globalState.toast.show = true;
+        };
+
+        // --- 1. AUTH & INIT LOGIC ---
+        const initAuth = async () => {
+            if (!auth) {
+                globalState.isLoading = false;
+                return;
+            }
+
+            // Fungsi untuk menangani perubahan status otentikasi
+            const handleAuthChange = (currentUser) => {
+                if (currentUser) {
+                    globalState.user = currentUser;
+                    globalState.isAdmin = currentUser.email === ADMIN_EMAIL;
+                } else {
+                    globalState.user = null;
+                    globalState.isAdmin = false;
+                }
+                globalState.isLoading = false;
+                globalState.authReady = true;
+            };
+
+            // Listener utama
+            onAuthStateChanged(auth, handleAuthChange);
+
+            // Coba sign-in dengan custom token (Canvas environment)
+            if (initialAuthToken && !auth.currentUser) {
+                try {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } catch (error) {
+                    console.error("Custom token sign-in failed:", error);
+                    // Jika gagal, coba sign-in anonim sebagai fallback
+                    await signInAnonymously(auth);
+                }
+            } else if (!auth.currentUser) {
+                 // Jika tidak ada token dan belum login, sign-in anonim
+                 await signInAnonymously(auth);
+            }
+        };
+
+        initAuth();
+
+        // --- 2. COMPONENTS ---
+
+        // ===================================
+        // A. LOGIN & RESET PASSWORD COMPONENT
+        // ===================================
+        const LoginPage = {
+            template: `
+                <v-container fill-height fluid>
+                    <v-row justify="center" align="center">
+                        <v-col cols="12" sm="8" md="5" lg="4">
+                            <v-card class="pa-6" elevation="10">
+                                <v-card-title class="text-h5 font-weight-bold text-primary text-center">
+                                    {{ isResetMode ? 'Atur Ulang Password' : 'Login Aplikasi BPHTB' }}
+                                </v-card-title>
+                                <v-card-text>
+                                    <v-form @submit.prevent="handleSubmit">
+                                        <v-text-field
+                                            v-model="email"
+                                            label="Email"
+                                            prepend-inner-icon="mdi-email"
+                                            required
+                                            variant="outlined"
+                                            class="mb-2"
+                                            :rules="[v => !!v || 'Email wajib diisi']"
+                                        ></v-text-field>
+
+                                        <v-text-field
+                                            v-if="!isResetMode"
+                                            v-model="password"
+                                            label="Password"
+                                            prepend-inner-icon="mdi-lock"
+                                            type="password"
+                                            required
+                                            variant="outlined"
+                                            :rules="[v => !!v || 'Password wajib diisi']"
+                                            class="mb-4"
+                                        ></v-text-field>
+
+                                        <v-btn
+                                            type="submit"
+                                            color="primary"
+                                            size="large"
+                                            block
+                                            :disabled="!email || (!isResetMode && !password)"
+                                        >
+                                            {{ isResetMode ? 'Kirim Link Reset' : 'Login' }}
+                                        </v-btn>
+                                    </v-form>
+                                </v-card-text>
+                                <v-card-actions class="justify-center">
+                                    <v-btn
+                                        variant="text"
+                                        color="secondary"
+                                        @click="isResetMode = !isResetMode"
+                                        size="small"
+                                    >
+                                        {{ isResetMode ? 'Kembali ke Login' : 'Lupa Password? Klik di sini.' }}
+                                    </v-btn>
+                                </v-card-actions>
+                            </v-card>
+                        </v-col>
+                    </v-row>
+                </v-container>
+            `,
+            setup() {
+                const email = ref('');
+                const password = ref('');
+                const isResetMode = ref(false);
+                const router = VueRouter.useRouter();
+
+                const handleLogin = async () => {
+                    if (!auth) {
+                        return showToast('Login gagal: Aplikasi dalam mode mockup (Firebase tidak terinisialisasi).', 'error');
+                    }
+                    try {
+                        await signInWithEmailAndPassword(auth, email.value, password.value);
+                        showToast('Login Berhasil!', 'success');
+                        router.push('/klarifikasi');
+                    } catch (error) {
+                        showToast(`Login Gagal: ${error.message}`, 'error');
+                        console.error("Login Error:", error);
+                    }
+                };
+
+                const handleResetPassword = async () => {
+                    if (!auth) {
+                        return showToast('Reset gagal: Aplikasi dalam mode mockup (Firebase tidak terinisialisasi).', 'error');
+                    }
+                    try {
+                        await sendPasswordResetEmail(auth, email.value);
+                        showToast(`Link reset password telah dikirim ke ${email.value}. Cek inbox Anda.`, 'success');
+                        isResetMode.value = false;
+                    } catch (error) {
+                        showToast(`Reset Password Gagal: ${error.message}`, 'error');
+                        console.error("Reset Password Error:", error);
+                    }
+                };
+
+                const handleSubmit = () => {
+                    if (isResetMode.value) {
+                        handleResetPassword();
+                    } else {
+                        handleLogin();
+                    }
+                };
+
+                return { email, password, isResetMode, handleSubmit };
+            }
+        };
+
+        // ===================================
+        // B. KLARIFIKASI FORM COMPONENT
+        // ===================================
+        const KlarifikasiPage = {
+            template: `
+                <v-container class="mt-4">
+                    <v-card class="pa-6" elevation="4">
+                        <v-card-title class="text-h5 font-weight-bold text-primary mb-4 border-b pb-2">Form Klarifikasi BPHTB Baru</v-card-title>
+                        <v-form @submit.prevent="handleSubmit">
+                            <v-row>
+                                <v-col cols="12" md="6">
+                                    <v-text-field
+                                        v-model="form.nomorDaftar"
+                                        label="Nomor Daftar BPHTB"
+                                        prepend-inner-icon="mdi-numeric"
+                                        required
+                                        variant="outlined"
+                                        :rules="[v => !!v || 'Wajib diisi']"
+                                    ></v-text-field>
+                                    <v-text-field
+                                        v-model="form.nama"
+                                        label="Nama Wajib Pajak"
+                                        prepend-inner-icon="mdi-account"
+                                        required
+                                        variant="outlined"
+                                        :rules="[v => !!v || 'Wajib diisi']"
+                                    ></v-text-field>
+                                    <v-text-field
+                                        v-model="form.tanggalKlarifikasi"
+                                        label="Tanggal Klarifikasi"
+                                        prepend-inner-icon="mdi-calendar"
+                                        type="date"
+                                        required
+                                        variant="outlined"
+                                        :rules="[v => !!v || 'Wajib diisi']"
+                                    ></v-text-field>
+                                </v-col>
+                                
+                                <v-col cols="12" md="6" class="bg-grey-lighten-4 rounded-lg pa-4">
+                                    <h3 class="text-subtitle-1 font-weight-semibold text-primary mb-3">Foto Diri (Kamera Depan)</h3>
+                                    
+                                    <div class="video-container mb-3" :style="{ position: 'relative', height: stream ? 'auto' : '200px', backgroundColor: '#333' }">
+                                        <video 
+                                            ref="videoRef" 
+                                            v-show="stream && !photoDataURL"
+                                            autoplay 
+                                            playsinline 
+                                            style="width: 100%; height: auto; display: block; transform: scaleX(-1);"
+                                        ></video>
+                                        <v-img v-if="photoDataURL" :src="photoDataURL" cover :aspect-ratio="16/9" style="transform: scaleX(-1);"></v-img>
+                                        <div v-if="!stream && !photoDataURL" class="text-center text-white d-flex align-center justify-center" style="height: 200px;">
+                                            Klik 'Aktifkan Kamera' untuk memulai.
+                                        </div>
+                                        <canvas ref="canvasRef" style="display: none;"></canvas>
+                                    </div>
+
+                                    <div class="d-flex ga-2">
+                                        <v-btn v-if="!stream && !photoDataURL" @click="startCamera" color="success" block prepend-icon="mdi-camera">
+                                            Aktifkan Kamera
+                                        </v-btn>
+                                        <v-btn v-if="stream" @click="takePhoto" color="warning" block prepend-icon="mdi-image-filter-center-focus">
+                                            Ambil Foto
+                                        </v-btn>
+                                        <v-btn v-if="photoDataURL" @click="resetPhoto" color="error" block prepend-icon="mdi-refresh">
+                                            Ulangi
+                                        </v-btn>
+                                    </div>
+                                </v-col>
+
+                                <v-col cols="12" class="pt-4">
+                                    <v-btn
+                                        type="submit"
+                                        color="primary"
+                                        size="large"
+                                        block
+                                        :loading="isSubmitting"
+                                        :disabled="!form.nomorDaftar || !form.nama || !form.tanggalKlarifikasi || !photoDataURL || isSubmitting"
+                                        prepend-icon="mdi-content-save"
+                                    >
+                                        Simpan Klarifikasi
+                                    </v-btn>
+                                </v-col>
+                            </v-row>
+                        </v-form>
+                    </v-card>
+                </v-container>
+            `,
+            setup() {
+                const videoRef = ref(null);
+                const canvasRef = ref(null);
+                const stream = ref(null);
+                const photoDataURL = ref('');
+                const isSubmitting = ref(false);
+
+                const form = reactive({
+                    nomorDaftar: '',
+                    nama: '',
+                    tanggalKlarifikasi: new Date().toISOString().slice(0, 10),
+                    fotoURL: '',
+                    status: 'Pending',
+                });
+
+                const startCamera = async () => {
+                    if (!navigator.mediaDevices || !videoRef.value) {
+                        showToast('Browser Anda tidak mendukung akses kamera.', 'error');
+                        return;
+                    }
+                    try {
+                        const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { facingMode: "user" } // Kamera Depan
+                        });
+                        stream.value = mediaStream;
+                        videoRef.value.srcObject = mediaStream;
+                        showToast('Kamera berhasil diaktifkan.', 'success');
+                    } catch (error) {
+                        console.error("Error accessing camera:", error);
+                        showToast('Gagal mengakses kamera. Pastikan izin diberikan.', 'error');
+                    }
+                };
+
+                const stopCamera = () => {
+                    if (stream.value) {
+                        stream.value.getTracks().forEach(track => track.stop());
+                        stream.value = null;
+                    }
+                };
+
+                const takePhoto = () => {
+                    if (videoRef.value && canvasRef.value) {
+                        const video = videoRef.value;
+                        const canvas = canvasRef.value;
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        const ctx = canvas.getContext('2d');
+                        // Mirror the image horizontally
+                        ctx.save();
+                        ctx.scale(-1, 1);
+                        ctx.drawImage(video, canvas.width * -1, 0, canvas.width, canvas.height);
+                        ctx.restore();
+                        
+                        const url = canvas.toDataURL('image/jpeg', 0.8);
+                        photoDataURL.value = url;
+                        stopCamera();
+                        showToast('Foto berhasil diambil.', 'success');
+                    }
+                };
+
+                const resetPhoto = () => {
+                    photoDataURL.value = '';
+                    startCamera();
+                };
+
+                const uploadPhotoToStorage = async (dataURL) => {
+                    if (!dataURL || !storage) return null;
+                    const filename = `bphtb-${Date.now()}-${globalState.user.uid}.jpg`;
+                    const storageReference = storageRef(storage, `bphtb_photos/${appId}/${filename}`);
+                    
+                    try {
+                        const snapshot = await uploadString(storageReference, dataURL, 'data_url');
+                        return await getDownloadURL(snapshot.ref);
+                    } catch (e) {
+                        console.error("Storage Upload Error:", e);
+                        throw new Error("Gagal mengunggah foto ke Storage.");
+                    }
+                };
+
+                const handleSubmit = async () => {
+                    if (!globalState.user || !globalState.user.email) {
+                        showToast('Anda harus login untuk mengajukan klarifikasi.', 'error');
+                        return;
+                    }
+                    if (!db) {
+                        return showToast('Penyimpanan gagal: Firebase tidak terinisialisasi.', 'error');
+                    }
+                    if (!photoDataURL.value) {
+                        showToast('Mohon ambil foto diri terlebih dahulu.', 'warning');
+                        return;
+                    }
+                    
+                    isSubmitting.value = true;
+                    try {
+                        showToast('Mengunggah foto dan menyimpan data...', 'info');
+                        
+                        const photoUrl = await uploadPhotoToStorage(photoDataURL.value);
+                        
+                        const dataToSave = {
+                            ...form,
+                            fotoURL: photoUrl,
+                            userId: globalState.user.uid,
+                            userEmail: globalState.user.email,
+                            createdAt: new Date(),
+                        };
+                        
+                        // Simpan ke koleksi private (riwayat user)
+                        const privateDocRef = await addDoc(collection(db, `artifacts/${appId}/users/${globalState.user.uid}/bphtb_klarifikasi`), dataToSave);
+                        
+                        // Tambahan: Simpan juga ke koleksi public agar admin bisa melihat, 
+                        // dan simpan privateDocId untuk sinkronisasi status
+                        const publicData = { 
+                            ...dataToSave, 
+                            userId: globalState.user.uid,
+                            privateDocId: privateDocRef.id // Simpan ID dokumen private
+                        }; 
+                        await addDoc(collection(db, `artifacts/${appId}/public/data/bphtb_klarifikasi`), publicData);
+
+                        
+                        showToast('Klarifikasi berhasil diajukan dan disimpan!', 'success');
+                        
+                        // Reset form
+                        form.nomorDaftar = '';
+                        form.nama = '';
+                        form.tanggalKlarifikasi = new Date().toISOString().slice(0, 10);
+                        photoDataURL.value = '';
+                        stopCamera();
+                    } catch (error) {
+                        console.error("Submission Error:", error);
+                        showToast(`Gagal menyimpan klarifikasi: ${error.message}`, 'error');
+                    } finally {
+                        isSubmitting.value = false;
+                    }
+                };
+
+                onUnmounted(stopCamera);
+
+                return {
+                    form, videoRef, canvasRef, stream, photoDataURL, isSubmitting,
+                    startCamera, takePhoto, resetPhoto, handleSubmit
+                };
+            }
+        };
+
+
+        // ===================================
+        // C. RIWAYAT KLARIFIKASI COMPONENT
+        // ===================================
+        const RiwayatPage = {
+            template: `
+                <v-container class="mt-4">
+                    <v-card class="pa-6" elevation="4">
+                        <v-card-title class="text-h5 font-weight-bold text-primary mb-4 border-b pb-2">Riwayat Klarifikasi Anda</v-card-title>
+                        
+                        <div class="d-flex justify-end mb-4 ga-2">
+                            <v-btn @click="exportToExcel" color="success" prepend-icon="mdi-file-excel">Ekspor ke Excel (Simulasi)</v-btn>
+                            <v-btn @click="exportToPDF" color="error" prepend-icon="mdi-file-pdf-box">Ekspor ke PDF (Simulasi)</v-btn>
+                        </div>
+                        
+                        <v-data-table
+                            :headers="headers"
+                            :items="historyData"
+                            :loading="loading"
+                            item-key="id"
+                            class="elevation-2"
+                            :no-data-text="'Tidak ada riwayat klarifikasi.'"
+                        >
+                            <template v-slot:item.status="{ item }">
+                                <v-chip :color="getStatusColor(item.status)" variant="flat" size="small">
+                                    {{ item.status }}
+                                </v-chip>
+                            </template>
+                            <template v-slot:item.createdAt="{ item }">
+                                {{ new Date(item.createdAt).toLocaleString() }}
+                            </template>
+                        </v-data-table>
+                    </v-card>
+                </v-container>
+            `,
+            setup() {
+                const historyData = ref([]);
+                const loading = ref(true);
+
+                const headers = [
+                    { title: 'No. Daftar', key: 'nomorDaftar' },
+                    { title: 'Nama Wajib Pajak', key: 'nama' },
+                    { title: 'Tgl Klarifikasi', key: 'tanggalKlarifikasi' },
+                    { title: 'Status Persetujuan', key: 'status' },
+                    { title: 'Diajukan Pada', key: 'createdAt' },
+                ];
+
+                const getStatusColor = (status) => {
+                    if (status === 'Disetujui') return 'success';
+                    if (status === 'Ditolak') return 'error';
+                    return 'warning'; // Pending
+                };
+
+                const fetchHistory = () => {
+                    if (!db || !globalState.user || !globalState.user.uid) return;
+
+                    const userUid = globalState.user.uid;
+                    // Mengambil data dari koleksi private user
+                    const q = query(collection(db, `artifacts/${appId}/users/${userUid}/bphtb_klarifikasi`));
+
+                    const unsubscribe = onSnapshot(q, (snapshot) => {
+                        const data = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data(),
+                            createdAt: doc.data().createdAt?.toDate().getTime() || Date.now()
+                        }));
+                        historyData.value = data;
+                        loading.value = false;
+                    }, (error) => {
+                        console.error("Error fetching history:", error);
+                        showToast('Gagal memuat riwayat data.', 'error');
+                        loading.value = false;
+                    });
+
+                    onUnmounted(unsubscribe);
+                };
+
+                watch(() => globalState.authReady, (ready) => {
+                    if (ready && globalState.user?.email) {
+                        fetchHistory();
+                    }
+                }, { immediate: true });
+
+                const exportToExcel = () => {
+                    if (historyData.value.length === 0) return showToast('Tidak ada data untuk diekspor.', 'warning');
+                    
+                    // Simulasi Ekspor XLSX (SheetJS)
+                    console.log("Simulasi Ekspor ke Excel dengan data:", historyData.value);
+                    showToast('Simulasi Ekspor ke Excel Berhasil!', 'info');
+                };
+
+                const exportToPDF = () => {
+                    if (historyData.value.length === 0) return showToast('Tidak ada data untuk diekspor.', 'warning');
+                    
+                    // Simulasi Ekspor PDF (jsPDF/html2canvas)
+                    console.log("Simulasi Ekspor ke PDF dari tabel.");
+                    showToast('Simulasi Ekspor ke PDF Berhasil!', 'info');
+                };
+
+
+                return { historyData, loading, headers, getStatusColor, exportToExcel, exportToPDF };
+            }
+        };
+
+        // ===================================
+        // D. ADMIN APPROVAL COMPONENT
+        // ===================================
+        const AdminPage = {
+            template: `
+                <v-container class="mt-4">
+                    <v-card class="pa-6" elevation="4">
+                        <v-card-title class="text-h5 font-weight-bold text-primary mb-4 border-b pb-2">Admin Persetujuan Klarifikasi</v-card-title>
+                        <v-alert type="info" variant="tonal" class="mb-4">
+                            Anda masuk sebagai Admin: <strong>{{ globalState.user.email }}</strong>
+                        </v-alert>
+
+                        <v-data-table
+                            :headers="headers"
+                            :items="allData"
+                            :loading="loading"
+                            item-key="id"
+                            class="elevation-2"
+                            :no-data-text="'Tidak ada data klarifikasi yang perlu disetujui.'"
+                        >
+                            <template v-slot:item.status="{ item }">
+                                <v-chip :color="getStatusColor(item.status)" variant="flat" size="small">
+                                    {{ item.status }}
+                                </v-chip>
+                            </template>
+                            <template v-slot:item.createdAt="{ item }">
+                                {{ new Date(item.createdAt).toLocaleString() }}
+                            </template>
+                            <template v-slot:item.aksi="{ item }">
+                                <v-btn icon color="secondary" size="small" class="mr-2" @click="viewDetail(item)">
+                                    <v-icon>mdi-eye</v-icon>
+                                    <v-tooltip activator="parent" location="top">Lihat Detail</v-tooltip>
+                                </v-btn>
+                                <v-btn v-if="item.status === 'Pending'" icon color="success" size="small" class="mr-2" @click="handleApproval(item.id, 'Disetujui')">
+                                    <v-icon>mdi-check</v-icon>
+                                    <v-tooltip activator="parent" location="top">Setujui</v-tooltip>
+                                </v-btn>
+                                <v-btn v-if="item.status === 'Pending'" icon color="error" size="small" @click="handleApproval(item.id, 'Ditolak')">
+                                    <v-icon>mdi-close</v-icon>
+                                    <v-tooltip activator="parent" location="top">Tolak</v-tooltip>
+                                </v-btn>
+                            </template>
+                        </v-data-table>
+                    </v-card>
+                    
+                    <!-- Modal Detail/Approval -->
+                    <v-dialog v-model="dialog" max-width="600">
+                        <v-card v-if="selectedDoc" class="pa-4">
+                            <v-card-title class="text-h5 font-weight-bold text-secondary">Detail Klarifikasi - {{ selectedDoc.nomorDaftar }}</v-card-title>
+                            <v-card-text>
+                                <v-row>
+                                    <v-col cols="12" sm="6">
+                                        <p><strong>Nama:</strong> {{ selectedDoc.nama }}</p>
+                                        <p><strong>Tgl Klarifikasi:</strong> {{ selectedDoc.tanggalKlarifikasi }}</p>
+                                        <p><strong>Diajukan oleh:</strong> {{ selectedDoc.userEmail }}</p>
+                                        <p><strong>Status Saat Ini:</strong> <v-chip :color="getStatusColor(selectedDoc.status)" variant="flat" size="small">{{ selectedDoc.status }}</v-chip></p>
+                                    </v-col>
+                                    <v-col cols="12" sm="6" v-if="selectedDoc.fotoURL">
+                                        <strong class="d-block mb-2">Foto Diri:</strong>
+                                        <v-img :src="selectedDoc.fotoURL" cover aspect-ratio="16/9" class="rounded-lg"></v-img>
+                                    </v-col>
+                                </v-row>
+                            </v-card-text>
+                            <v-card-actions class="pt-0">
+                                <v-spacer></v-spacer>
+                                <v-btn color="grey" variant="text" @click="dialog = false">Tutup</v-btn>
+                                <v-btn v-if="selectedDoc.status !== 'Disetujui'" color="success" variant="flat" @click="handleApproval(selectedDoc.id, 'Disetujui')">Setujui</v-btn>
+                                <v-btn v-if="selectedDoc.status !== 'Ditolak'" color="error" variant="flat" @click="handleApproval(selectedDoc.id, 'Ditolak')">Tolak</v-btn>
+                            </v-card-actions>
+                        </v-card>
+                    </v-dialog>
+                </v-container>
+            `,
+            setup() {
+                const allData = ref([]);
+                const loading = ref(true);
+                const dialog = ref(false);
+                const selectedDoc = ref(null);
+
+                const headers = [
+                    { title: 'No. Daftar', key: 'nomorDaftar' },
+                    { title: 'Nama', key: 'nama' },
+                    { title: 'User Email', key: 'userEmail' },
+                    { title: 'Status', key: 'status' },
+                    { title: 'Diajukan Pada', key: 'createdAt' },
+                    { title: 'Aksi', key: 'aksi', sortable: false, align: 'center' },
+                ];
+
+                const getStatusColor = (status) => {
+                    if (status === 'Disetujui') return 'success';
+                    if (status === 'Ditolak') return 'error';
+                    return 'warning'; // Pending
+                };
+
+                const fetchAllData = () => {
+                    if (!db) return;
+                    
+                    // Mengambil semua data dari koleksi public untuk persetujuan.
+                    const qPublic = query(collection(db, `artifacts/${appId}/public/data/bphtb_klarifikasi`));
+
+                    const unsubscribe = onSnapshot(qPublic, (snapshot) => {
+                        const data = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data(),
+                            createdAt: doc.data().createdAt?.toDate().getTime() || Date.now()
+                        }));
+                        allData.value = data;
+                        loading.value = false;
+                    }, (error) => {
+                        console.error("Error fetching all data:", error);
+                        showToast('Gagal memuat semua data klarifikasi.', 'error');
+                        loading.value = false;
+                    });
+
+                    onUnmounted(unsubscribe);
+                };
+
+                watch(() => globalState.authReady, (ready) => {
+                    if (ready && globalState.isAdmin) {
+                        fetchAllData();
+                    }
+                }, { immediate: true });
+
+                const handleApproval = async (docId, status) => {
+                    if (!db) {
+                        return showToast('Operasi gagal: Firebase tidak terinisialisasi.', 'error');
+                    }
+                    
+                    try {
+                        const targetDoc = allData.value.find(d => d.id === docId);
+                        
+                        if (!targetDoc) {
+                            showToast('Dokumen target tidak ditemukan.', 'error');
+                            return;
+                        }
+
+                        // Data update
+                        const updatePayload = {
+                            status: status,
+                            adminEmail: globalState.user.email,
+                            approvedAt: new Date(),
+                        };
+
+                        // 1. Update dokumen di koleksi public
+                        const docRefPublic = doc(db, `artifacts/${appId}/public/data/bphtb_klarifikasi`, docId);
+                        await updateDoc(docRefPublic, updatePayload);
+
+                        // 2. Update dokumen di koleksi private user untuk sinkronisasi riwayat
+                        const userUid = targetDoc.userId;
+                        const privateDocId = targetDoc.privateDocId; // Menggunakan ID yang disimpan saat pengajuan
+                        
+                        if (userUid && privateDocId) {
+                            const docRefPrivate = doc(db, `artifacts/${appId}/users/${userUid}/bphtb_klarifikasi`, privateDocId);
+                            await updateDoc(docRefPrivate, updatePayload);
+                        } else {
+                            console.warn("Private Doc ID atau User ID tidak ditemukan, hanya koleksi public yang diperbarui.");
+                        }
+                        
+                        showToast(`Dokumen berhasil diubah statusnya menjadi ${status}.`, 'success');
+                        dialog.value = false;
+                    } catch (error) {
+                        console.error("Approval/Rejection Error:", error);
+                        showToast(`Gagal mengubah status: ${error.message}`, 'error');
+                    }
+                };
+
+                const viewDetail = (item) => {
+                    selectedDoc.value = item;
+                    dialog.value = true;
+                };
+
+                return {
+                    globalState, allData, loading, headers, dialog, selectedDoc,
+                    getStatusColor, handleApproval, viewDetail
+                };
+            }
+        };
+
+        // ===================================
+        // E. ROOT APP COMPONENT (Main Layout)
+        // ===================================
+        const App = {
+            template: `
+                <v-app>
+                    <v-app-bar color="primary" flat dark>
+                        <v-app-bar-nav-icon v-if="globalState.user" @click="drawer = !drawer"></v-app-bar-nav-icon>
+                        <v-app-bar-title>Aplikasi Klarifikasi BPHTB</v-app-bar-title>
+                        <v-spacer></v-spacer>
+                        <v-btn v-if="globalState.user && globalState.user.email" @click="handleLogout" icon>
+                            <v-icon>mdi-logout</v-icon>
+                            <v-tooltip activator="parent" location="bottom">Logout</v-tooltip>
+                        </v-btn>
+                        <v-btn v-else-if="!globalState.isLoading" @click="$router.push('/login')" prepend-icon="mdi-login" variant="flat" color="secondary">
+                            Login
+                        </v-btn>
+                    </v-app-bar>
+
+                    <!-- Navigasi Samping (Responsif) -->
+                    <v-navigation-drawer v-model="drawer" temporary v-if="globalState.user && globalState.user.email">
+                        <v-list-item
+                            prepend-icon="mdi-account-circle"
+                            :title="globalState.user.email || 'Pengguna'"
+                            :subtitle="globalState.isAdmin ? 'Admin' : 'Petugas'"
+                            class="mb-2 bg-secondary"
+                        ></v-list-item>
+
+                        <v-divider></v-divider>
+
+                        <v-list nav>
+                            <v-list-item to="/klarifikasi" prepend-icon="mdi-file-edit" title="Klarifikasi Baru" @click="drawer = false"></v-list-item>
+                            <v-list-item to="/riwayat" prepend-icon="mdi-history" title="Riwayat Klarifikasi" @click="drawer = false"></v-list-item>
+                            <v-list-item v-if="globalState.isAdmin" to="/admin" prepend-icon="mdi-shield-crown" title="Admin Persetujuan" @click="drawer = false"></v-list-item>
+                        </v-list>
+                    </v-navigation-drawer>
+
+                    <v-main>
+                        <v-container fluid class="pa-0">
+                            <v-progress-linear v-if="globalState.isLoading" indeterminate color="primary"></v-progress-linear>
+                            <router-view v-else></router-view>
+                        </v-container>
+                    </v-main>
+
+                    <!-- Toast Notification -->
+                    <v-snackbar
+                        v-model="globalState.toast.show"
+                        :color="globalState.toast.color"
+                        :timeout="4000"
+                        location="bottom right"
+                    >
+                        {{ globalState.toast.message }}
+                        <template v-slot:actions>
+                            <v-btn
+                                variant="text"
+                                @click="globalState.toast.show = false"
+                            >
+                                Tutup
+                            </v-btn>
+                        </template>
+                    </v-snackbar>
+                </v-app>
+            `,
+            setup() {
+                const drawer = ref(false);
+                const router = VueRouter.useRouter();
+
+                const handleLogout = async () => {
+                    try {
+                        await signOut(auth);
+                        showToast('Berhasil Logout!', 'success');
+                        router.push('/login');
+                    } catch (error) {
+                        showToast(`Gagal Logout: ${error.message}`, 'error');
+                        console.error("Logout Error:", error);
+                    }
+                };
+
+                return { globalState, drawer, handleLogout };
+            }
+        };
+
+        // --- 3. VUE ROUTER SETUP ---
+        const routes = [
+            { path: '/login', component: LoginPage, name: 'Login' },
+            { 
+                path: '/', 
+                redirect: '/klarifikasi',
+                component: { template: '<div>Redirecting...</div>' }
+            },
+            { 
+                path: '/klarifikasi', 
+                component: KlarifikasiPage, 
+                meta: { requiresAuth: true } 
+            },
+            { 
+                path: '/riwayat', 
+                component: RiwayatPage, 
+                meta: { requiresAuth: true } 
+            },
+            { 
+                path: '/admin', 
+                component: AdminPage, 
+                meta: { requiresAuth: true, requiresAdmin: true } 
+            },
+        ];
+
+        const router = createRouter({
+            history: createWebHashHistory(),
+            routes,
+        });
+
+        // Route Guard
+        router.beforeEach((to, from, next) => {
+            if (!globalState.authReady) {
+                // Tunggu hingga autentikasi selesai
+                const unwatch = watch(() => globalState.authReady, (ready) => {
+                    if (ready) {
+                        unwatch();
+                        proceed();
+                    }
+                });
+            } else {
+                proceed();
+            }
+
+            function proceed() {
+                // User dianggap terautentikasi jika memiliki email (yaitu bukan sign-in anonim)
+                const isAuthenticated = !!globalState.user?.email;
+
+                if (to.meta.requiresAuth && !isAuthenticated) {
+                    showToast('Anda harus login untuk mengakses halaman ini.', 'warning');
+                    next('/login');
+                } else if (to.meta.requiresAdmin && !globalState.isAdmin) {
+                    showToast('Akses ditolak. Hanya Admin yang dapat mengakses halaman ini.', 'error');
+                    next('/klarifikasi'); // Arahkan ke halaman Klarifikasi jika bukan admin
+                } else {
+                    next();
+                }
+            }
+        });
+
+        // --- 4. MOUNT VUE APP ---
+        createApp(App)
+            .use(router)
+            .use(vuetify)
+            .mount('#app');
+
+    </script>
+</body>
+</html>
